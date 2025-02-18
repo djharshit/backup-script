@@ -1,12 +1,16 @@
+import datetime
+import logging
 import os
 import shutil
-import datetime
-import requests
-import logging
 
+import requests
+from dotenv import load_dotenv
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.service_account import Credentials
+
+# Load environment variables
+load_dotenv()
 
 # Load configuration
 PROJECT_PATH = os.environ.get("PROJECT_PATH", "")
@@ -39,7 +43,11 @@ def upload_to_google_drive(backup_filename: str) -> None:
 
     # Upload the file
     try:
-        file = drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+        file = (
+            drive_service.files()
+            .create(body=file_metadata, media_body=media, fields="id")
+            .execute()
+        )
         logging.info(f'File uploaded successfully with ID: {file["id"]}')
     except Exception as e:
         logging.error(f"An error occurred: {e}")
@@ -61,12 +69,18 @@ def cleanup_old_backups(service) -> None:
                 os.remove(file_path)
 
     query = f"'{GDRIVE_FOLDER_ID}' in parents and mimeType='application/zip'"
-    results = service.files().list(q=query, spaces="drive", fields="files(id, name, createdTime)").execute()
+    results = (
+        service.files()
+        .list(q=query, spaces="drive", fields="files(id, name, createdTime)")
+        .execute()
+    )
     items = results.get("files", [])
 
     logging.info(f"Deleting old backup from Google Drive")
     for item in items:
-        creation_time = datetime.datetime.strptime(item["createdTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
+        creation_time = datetime.datetime.strptime(
+            item["createdTime"], "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
         age = (now - creation_time).days
 
         if age > RETENTION:
@@ -97,7 +111,11 @@ cleanup_old_backups(drive_service)
 
 if USE_WEBHOOK:
     try:
-        payload = {"project": PROJECT_PATH, "date": timestamp, "message": "BackupSuccessful"}
+        payload = {
+            "project": PROJECT_PATH,
+            "date": timestamp,
+            "message": "BackupSuccessful",
+        }
 
         logging.info("Sending webhook notification...")
         response = requests.post(WEBHOOK_URL, json=payload)
