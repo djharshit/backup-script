@@ -68,11 +68,16 @@ def cleanup_old_gdrive_backups(service) -> None:
     files = list_files(service)
 
     for file in files:
-        file_date = file["createdTime"].split("T")[0]
+        try:
+            file_date = file["name"].split("_")[1].split(".")[0]
 
-        if should_delete(file_date):
-            service.files().delete(fileId=file["id"]).execute()
-            logging.info(f"Deleted old backup: {file['name']}")
+            if should_delete(file_date):
+                service.files().delete(fileId=file["id"]).execute()
+                logging.info(f"Deleted old gdrive backup: {file['name']}")
+
+        except Exception as e:
+            logging.error(f"Skipping file {file['name']}, error: {e}")
+            continue
 
 
 # Delete old local backups that do not match the retention policy
@@ -88,14 +93,13 @@ def cleanup_old_local_backups():
 
         try:
             file_date = file_name.split("_")[1].split(".")[0]
+            if should_delete(file_date):
+                os.remove(file_path)
+                logging.info(f"Deleted old local backup: {file_name}")
 
         except Exception as e:
-            logging.info(f"Skipping file {file_name}, error: {e}")
+            logging.error(f"Skipping file {file_name}, error: {e}")
             continue
-
-        if should_delete(file_date):
-            os.remove(file_path)
-            logging.info(f"Deleted old local backup: {file_name}")
 
 
 # Check if a file should be deleted based on retention policy
