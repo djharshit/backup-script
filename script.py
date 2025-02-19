@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Load configuration
 PROJECT_PATH = os.environ.get("PROJECT_PATH", "")
@@ -53,38 +53,74 @@ def upload_to_google_drive(backup_filename: str) -> None:
         logging.error(f"An error occurred: {e}")
 
 
-# Implement rotational backup strategy
-def cleanup_old_backups(service) -> None:
-    now = datetime.datetime.now()
-
-    logging.info(f"Deleting old backups from local directory")
-    for file in os.listdir(BACKUP_DIR):
-        file_path = os.path.join(BACKUP_DIR, file)
-
-        if os.path.isfile(file_path):
-            creation_time = datetime.datetime.fromtimestamp(os.path.getctime(file_path))
-            age = (now - creation_time).days
-
-            if age > RETENTION:
-                os.remove(file_path)
-
-    query = f"'{GDRIVE_FOLDER_ID}' in parents and mimeType='application/zip'"
+# List files in a Google Drive folder
+def list_files(service):
+    query = f"'{GDRIVE_FOLDER_ID}' in parents"
     results = (
-        service.files()
-        .list(q=query, spaces="drive", fields="files(id, name, createdTime)")
-        .execute()
+        service.files().list(q=query, fields="files(id, name, createdTime)").execute()
     )
-    items = results.get("files", [])
+    return results.get("files", [])
 
-    logging.info(f"Deleting old backup from Google Drive")
-    for item in items:
-        creation_time = datetime.datetime.strptime(
-            item["createdTime"], "%Y-%m-%dT%H:%M:%S.%fZ"
-        )
-        age = (now - creation_time).days
 
-        if age > RETENTION:
-            service.files().delete(fileId=item["id"]).execute()
+# Delete old gdrive backups that do not match the retention policy
+def cleanup_old_gdrive_backups(service) -> None:
+    """Delete old backups that do not match the retention policy."""
+    files = list_files(service)
+
+    for file in files:
+        file_date = file["createdTime"].split("T")[0]
+
+        if should_delete(file_date):
+            service.files().delete(fileId=file["id"]).execute()
+            logging.info(f"Deleted old backup: {file['name']}")
+
+
+# Delete old local backups that do not match the retention policy
+def cleanup_old_local_backups():
+    if not os.path.exists(BACKUP_DIR):
+        logging.info(f"Local backup directory '{BACKUP_DIR}' does not exist.")
+        return
+
+    files = os.listdir(BACKUP_DIR)
+
+    for file_name in files:
+        file_path = os.path.join(BACKUP_DIR, file_name)
+
+        try:
+            file_date = file_name.split("_")[1].split(".")[0]
+
+        except Exception as e:
+            logging.info(f"Skipping file {file_name}, error: {e}")
+            continue
+
+        if should_delete(file_date):
+            os.remove(file_path)
+            logging.info(f"Deleted old local backup: {file_name}")
+
+
+# Check if a file should be deleted based on retention policy
+def should_delete(file_date) -> bool:
+    file_datetime = datetime.datetime.strptime(file_date, "%Y-%m-%d").date()
+    today = datetime.date.today()
+
+    if (today - file_datetime).days <= RETENTION:  # Keep the last X days
+        return False
+
+    sundays = [
+        today - datetime.timedelta(days=today.weekday() + 1 + (7 * i))
+        for i in range(RETENTION)
+    ]
+    if file_datetime in sundays:  # Keep the last X weeks
+        return False
+
+    first_days = [
+        (today.replace(day=1) - datetime.timedelta(days=30 * i)).replace(day=1)
+        for i in range(RETENTION)
+    ]
+    if file_datetime in first_days:  # Keep the last X months
+        return False
+
+    return True
 
 
 # Generate timestamped backup filename
@@ -93,7 +129,7 @@ project_name = os.path.basename(PROJECT_PATH)
 backup_filename = f"{project_name}_{timestamp}.zip"
 backup_path = os.path.join(BACKUP_DIR, backup_filename)
 
-# Configur
+# Con
 scopes = ["https://www.googleapis.com/auth/drive.file"]
 service_account_file = "credentials.json"
 credentials = Credentials.from_service_account_file(service_account_file, scopes=scopes)
@@ -106,8 +142,9 @@ shutil.make_archive(backup_path.replace(".zip", ""), "zip", PROJECT_PATH)
 # Upload the backup to Google Drive
 upload_to_google_drive(backup_filename)
 
-logging.info("Cleaning up old backups...")
-cleanup_old_backups(drive_service)
+logging.info("Cleaning up old backups")
+cleanup_old_gdrive_backups(drive_service)
+cleanup_old_local_backups()
 
 if USE_WEBHOOK:
     try:
@@ -117,7 +154,7 @@ if USE_WEBHOOK:
             "message": "BackupSuccessful",
         }
 
-        logging.info("Sending webhook notification...")
+        logging.info("Sending webhook notification")
         response = requests.post(WEBHOOK_URL, json=payload)
 
         if response.status_code == 200:
